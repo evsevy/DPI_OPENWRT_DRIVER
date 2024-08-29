@@ -1,0 +1,104 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <string.h>
+#include <cjson/cJSON.h>
+#include <openssl/aes.h>
+#include <openssl/rand.h>
+
+#define MAX_PACKETS 100
+#define AES_KEY_LENGTH 128
+
+typedef struct {
+    char data[256];
+    int packet_type; // 0 - type1, 1 - type2, 2 - type3 и т.д.
+} Packet;
+
+Packet packets[MAX_PACKETS];
+int packet_count = 0;
+pthread_mutex_t lock;
+
+static unsigned char aes_key[AES_KEY_LENGTH / 8]; // Ключ шифрования
+
+void generate_aes_key() {
+    if (RAND_bytes(aes_key, sizeof(aes_key)) != 1) {
+        fprintf(stderr, "Ошибка генерации ключа AES
+");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void encrypt_data(const char *input, unsigned char *output) {
+    AES_KEY enc_key;
+    AES_set_encrypt_key(aes_key, AES_KEY_LENGTH, &enc_key);
+    AES_encrypt((unsigned char*)input, output, &enc_key);
+}
+
+void save_data(const char* filename) {
+    pthread_mutex_lock(&lock); // Блокируем доступ к общему ресурсу
+    FILE *file = fopen(filename, "a"); // Открываем файл в режиме добавления
+    if (file == NULL) {
+        perror("Не удалось открыть файл");
+        pthread_mutex_unlock(&lock);
+        return;
+    }
+    
+    for (int i = 0; i < packet_count; ++i) {
+        // Простой пример выявления опасного пакета
+        if (strstr(packets[i].data, "опасный") != NULL) {
+            printf("Обнаружен опасный пакет: %s
+", packets[i].data);
+            continue; // Пропустить опасный пакет
+        }
+
+        unsigned char encrypted_data[256];
+        encrypt_data(packets[i].data, encrypted_data);
+        
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddStringToObject(json, "data", (const char*)encrypted_data); // Сохраняем зашифрованные данные
+        cJSON_AddNumberToObject(json, "type", packets[i].packet_type);
+        
+        char *json_string = cJSON_Print(json);
+        fprintf(file, "%s
+", json_string); // Запись данных в файл
+        free(json_string); // Освобождаем выделенную память
+        cJSON_Delete(json); // Удаляем объект
+    }
+
+    fclose(file);
+    printf("Данные успешно сохранены в %s
+", filename);
+    packet_count = 0; // Сбрасываем счетчик после сохранения
+    pthread_mutex_unlock(&lock); // Разблокируем доступ
+}
+
+void* packet_handler(void* arg) {
+    // Эмулируем получение пакетов
+    for (int i = 0; i < 10; i++) {
+        pthread_mutex_lock(&lock);
+        if (packet_count < MAX_PACKETS) {
+            snprintf(packets[packet_count].data, 256, "Пакет %d", i);
+            packets[packet_count].packet_type = i % 3; // Присваиваем тип пакета
+            packet_count++;
+        }
+        pthread_mutex_unlock(&lock);
+        sleep(1); // Задержка для имитации времени получения пакетов
+    }
+    return NULL;
+}
+
+int main() {
+    const char *filename = "/etc/data.json"; // Путь к файлу
+    pthread_t handler_thread;
+
+    pthread_mutex_init(&lock, NULL); // Инициализация мьютекса
+    generate_aes_key(); // Генерация ключа AES
+
+    pthread_create(&handler_thread, NULL, packet_handler, NULL); // Создаем поток для обработки пакетов
+    pthread_join(handler_thread, NULL); // Ожидаем завершения потока
+
+    save_data(filename); // Сохраняем данные в файл
+    pthread_mutex_destroy(&lock); // Освобождаем мьютекс
+    return 0;
+}
+           
